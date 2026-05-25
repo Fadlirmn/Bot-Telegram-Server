@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  monitor-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: monitor-server-bot
+    restart: always
+    network_mode: host # Allows direct access to host network interfaces and faster name resolution
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /etc:/host/etc:ro
+      - /:/hostfs:ro
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      - POLL_INTERVAL=${POLL_INTERVAL:-10}
+      - CPU_THRESHOLD=${CPU_THRESHOLD:-85}
+      - RAM_THRESHOLD=${RAM_THRESHOLD:-85}
+      - DISK_THRESHOLD=${DISK_THRESHOLD:-90}
+      - ALERT_COOLDOWN=${ALERT_COOLDOWN:-30}
+      - DAILY_REPORT_TIME=${DAILY_REPORT_TIME:-08:00}
+      - TZ=${TZ:-Asia/Jakarta}
+      - HOST_PROC=/host/proc
+      - HOST_SYS=/host/sys
+      - HOST_ETC=/host/etc
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
