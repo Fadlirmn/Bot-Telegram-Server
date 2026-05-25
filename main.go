@@ -95,15 +95,6 @@ func main() {
 			continue
 		}
 
-		// Security feature: Only respond to messages from authorized chat ID
-		if update.Message.Chat.ID != chatID {
-			log.Printf("Unauthorized command attempt from Chat ID: %d, Username: %s", update.Message.Chat.ID, update.Message.Chat.UserName)
-			// Respond with a polite permission denied message
-			msg := tgbotapi.NewMessage(update.Message.Chat.ID, "⛔ Akses ditolak. Bot ini dikonfigurasi hanya untuk melayani pemilik server.")
-			bot.Send(msg)
-			continue
-		}
-
 		if update.Message.IsCommand() {
 			handleCommand(bot, update.Message)
 		}
@@ -112,7 +103,11 @@ func main() {
 
 func handleCommand(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 	command := strings.ToLower(msg.Command())
-	log.Printf("Received command: /%s", command)
+	username := ""
+	if msg.From != nil {
+		username = msg.From.UserName
+	}
+	log.Printf("Received command: /%s from Chat ID: %d, Username: %s", command, msg.Chat.ID, username)
 
 	switch command {
 	case "status":
