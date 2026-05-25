@@ -6,9 +6,9 @@ RUN apk add --no-cache git gcc musl-dev
 
 WORKDIR /app
 
-# Copy go.mod and run tidy to download dependencies and generate go.sum
-COPY go.mod ./
-RUN go mod tidy
+# Copy go.mod and go.sum to download dependencies
+COPY go.mod go.sum ./
+RUN go mod download
 
 # Copy source code
 COPY main.go ./
