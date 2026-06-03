@@ -13,6 +13,7 @@ services:
       - /sys:/host/sys:ro
       - /etc:/host/etc:ro
       - /:/hostfs:ro
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -75,6 +76,9 @@ func main() {
 	}
 	log.Printf("Authorized on account @%s", bot.Self.UserName)
 
+	// Register bot command menu
+	setBotCommands(bot)
+
 	// Start stats gathering loop (runs first system poll synchronously to populate initial cache)
 	updateStats()
 	go startStatsGathering(bot, chatID, pollInterval, cpuThreshold, ramThreshold, diskThreshold, alertCooldown)
@@ -91,12 +95,12 @@ func main() {
 	updates := bot.GetUpdatesChan(u)
 
 	for update := range updates {
-		if update.Message == nil {
-			continue
-		}
-
-		if update.Message.IsCommand() {
-			handleCommand(bot, update.Message)
+		if update.Message != nil {
+			if update.Message.IsCommand() {
+				handleCommand(bot, update.Message)
+			}
+		} else if update.CallbackQuery != nil {
+			handleCallbackQuery(bot, update.CallbackQuery)
 		}
 	}
 }
@@ -112,12 +116,21 @@ func handleCommand(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 	switch command {
 	case "status":
 		handleStatusCommand(bot, msg.Chat.ID)
+	case "vps", "vps_status", "vpsstatus":
+		handleVPSCommand(bot, msg.Chat.ID)
+	case "docker", "docker_status", "dockerstatus":
+		handleDockerStatusCommand(bot, msg.Chat.ID)
+	case "dockerlogs", "logs", "docker_logs":
+		handleDockerLogsCommand(bot, msg.Chat.ID, msg.CommandArguments())
 	case "ping":
 		reply := tgbotapi.NewMessage(msg.Chat.ID, "🏓 Pong! Bot monitoring aktif dan berjalan lancar.")
 		bot.Send(reply)
 	case "help":
 		helpText := "📌 *Daftar Perintah Bot Monitoring:*\n\n" +
 			"👉 `/status` - Menampilkan status CPU, RAM, Disk, dan Uptime server saat ini.\n" +
+			"👉 `/vps` - Menampilkan detail info dan spesifikasi VPS.\n" +
+			"👉 `/docker` - Menampilkan status container Docker saat ini.\n" +
+			"👉 `/dockerlogs` - Menampilkan log container Docker (menggunakan tombol aktif).\n" +
 			"👉 `/ping` - Memeriksa konektivitas dan status keaktifan bot.\n" +
 			"👉 `/help` - Menampilkan bantuan ini."
 		reply := tgbotapi.NewMessage(msg.Chat.ID, helpText)
@@ -126,6 +139,295 @@ func handleCommand(bot *tgbotapi.BotAPI, msg *tgbotapi.Message) {
 	default:
 		reply := tgbotapi.NewMessage(msg.Chat.ID, "❌ Perintah tidak dikenal. Ketik `/help` untuk daftar perintah.")
 		bot.Send(reply)
+	}
+}
+
+func setBotCommands(bot *tgbotapi.BotAPI) {
+	commands := []tgbotapi.BotCommand{
+		{
+			Command:     "status",
+			Description: "Melihat status CPU, RAM, Disk & Uptime server",
+		},
+		{
+			Command:     "vps",
+			Description: "Melihat detail info dan spesifikasi VPS",
+		},
+		{
+			Command:     "docker",
+			Description: "Melihat status container Docker",
+		},
+		{
+			Command:     "dockerlogs",
+			Description: "Melihat log container Docker",
+		},
+		{
+			Command:     "ping",
+			Description: "Memeriksa konektivitas ke bot",
+		},
+		{
+			Command:     "help",
+			Description: "Menampilkan daftar perintah bantuan",
+		},
+	}
+
+	config := tgbotapi.NewSetMyCommands(commands...)
+	if _, err := bot.Request(config); err != nil {
+		log.Printf("Error setting bot commands: %v", err)
+	} else {
+		log.Println("Bot commands menu registered successfully!")
+	}
+}
+
+func handleCallbackQuery(bot *tgbotapi.BotAPI, query *tgbotapi.CallbackQuery) {
+	callback := tgbotapi.NewCallback(query.ID, "")
+	if _, err := bot.Request(callback); err != nil {
+		log.Printf("Error acknowledging callback: %v", err)
+	}
+
+	data := query.Data
+	if strings.HasPrefix(data, "dockerlogs:") {
+		containerName := strings.TrimPrefix(data, "dockerlogs:")
+		handleDockerLogsCommand(bot, query.Message.Chat.ID, containerName)
+	}
+}
+
+func getLoadAverage() string {
+	procPath := "/proc/loadavg"
+	if envProc := os.Getenv("HOST_PROC"); envProc != "" {
+		procPath = envProc + "/loadavg"
+	}
+	data, err := os.ReadFile(procPath)
+	if err != nil {
+		return "N/A"
+	}
+	parts := strings.Fields(string(data))
+	if len(parts) >= 3 {
+		return fmt.Sprintf("%s, %s, %s", parts[0], parts[1], parts[2])
+	}
+	return "N/A"
+}
+
+func handleVPSCommand(bot *tgbotapi.BotAPI, chatID int64) {
+	hostInfo, err := host.Info()
+	if err != nil {
+		log.Printf("Error fetching host info: %v", err)
+	}
+
+	var cpuModel string
+	var cpuCores int32
+	var cpuMhz float64
+	cpuInfos, err := cpu.Info()
+	if err == nil && len(cpuInfos) > 0 {
+		cpuModel = cpuInfos[0].ModelName
+		cpuCores = int32(len(cpuInfos))
+		cpuMhz = cpuInfos[0].Mhz
+	} else {
+		cpuModel = "N/A"
+	}
+
+	virtualMem, err := mem.VirtualMemory()
+	var ramInfo string
+	if err == nil {
+		ramUsedGB := float64(virtualMem.Used) / (1024 * 1024 * 1024)
+		ramTotalGB := float64(virtualMem.Total) / (1024 * 1024 * 1024)
+		ramInfo = fmt.Sprintf("%.2f GB / %.2f GB (%.1f%%)", ramUsedGB, ramTotalGB, virtualMem.UsedPercent)
+	} else {
+		ramInfo = "N/A"
+	}
+
+	swapMem, err := mem.SwapMemory()
+	var swapInfo string
+	if err == nil {
+		swapUsedGB := float64(swapMem.Used) / (1024 * 1024 * 1024)
+		swapTotalGB := float64(swapMem.Total) / (1024 * 1024 * 1024)
+		swapInfo = fmt.Sprintf("%.2f GB / %.2f GB (%.1f%%)", swapUsedGB, swapTotalGB, swapMem.UsedPercent)
+	} else {
+		swapInfo = "N/A"
+	}
+
+	loadAvg := getLoadAverage()
+
+	var hostname, platform, kernel, arch, virt string
+	if hostInfo != nil {
+		hostname = hostInfo.Hostname
+		platform = fmt.Sprintf("%s %s", hostInfo.Platform, hostInfo.PlatformVersion)
+		kernel = hostInfo.KernelVersion
+		arch = hostInfo.KernelArch
+		if hostInfo.VirtualizationSystem != "" {
+			virt = fmt.Sprintf("%s (%s)", hostInfo.VirtualizationSystem, hostInfo.VirtualizationRole)
+		} else {
+			virt = "Baremetal"
+		}
+	} else {
+		hostname, platform, kernel, arch, virt = "N/A", "N/A", "N/A", "N/A", "N/A"
+	}
+
+	text := fmt.Sprintf(
+		"⚙️ *INFORMASI SISTEM VPS*\n"+
+			"-----------------------------\n"+
+			"🏷️ *Hostname:* `%s`\n"+
+			"🐧 *OS/Platform:* `%s`\n"+
+			"📦 *Kernel:* `%s (%s)`\n"+
+			"🖥️ *Virtualization:* `%s`\n"+
+			"⚙️ *Processor:* `%s (%d Cores @ %.0f MHz)`\n"+
+			"📊 *Load Average:* `%s`\n"+
+			"📟 *Memory (RAM):* `%s`\n"+
+			"💾 *Swap Memory:* `%s`\n"+
+			"-----------------------------",
+		hostname, platform, kernel, arch, virt, cpuModel, cpuCores, cpuMhz, loadAvg, ramInfo, swapInfo,
+	)
+
+	reply := tgbotapi.NewMessage(chatID, text)
+	reply.ParseMode = "Markdown"
+	if _, err := bot.Send(reply); err != nil {
+		log.Printf("Error sending VPS response: %v", err)
+	}
+}
+
+func handleDockerStatusCommand(bot *tgbotapi.BotAPI, chatID int64) {
+	cmd := exec.Command("docker", "ps", "-a", "--format", "{{.Names}}\t{{.Status}}\t{{.State}}")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		reply := tgbotapi.NewMessage(chatID, "❌ *Gagal mendapatkan status Docker.*\nPastikan Docker daemon berjalan dan service memiliki hak akses socket.\n\nDetail error:\n`"+err.Error()+"`")
+		reply.ParseMode = "Markdown"
+		bot.Send(reply)
+		return
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	if len(lines) == 0 || (len(lines) == 1 && lines[0] == "") {
+		reply := tgbotapi.NewMessage(chatID, "🐳 *Tidak ada container Docker yang berjalan atau terinstal.*")
+		reply.ParseMode = "Markdown"
+		bot.Send(reply)
+		return
+	}
+
+	var builder strings.Builder
+	builder.WriteString("🐳 *STATUS DOCKER CONTAINER*\n")
+	builder.WriteString("-----------------------------\n")
+
+	for _, line := range lines {
+		parts := strings.Split(line, "\t")
+		if len(parts) < 3 {
+			continue
+		}
+		name := parts[0]
+		status := parts[1]
+		state := parts[2]
+
+		var statusEmoji string
+		switch state {
+		case "running":
+			statusEmoji = "🟢"
+		case "paused":
+			statusEmoji = "🟡"
+		case "exited":
+			statusEmoji = "🔴"
+		case "restarting":
+			statusEmoji = "🔄"
+		default:
+			statusEmoji = "⚪"
+		}
+
+		builder.WriteString(fmt.Sprintf("%s `%s`\n   ↳ Status: _%s_\n", statusEmoji, name, status))
+	}
+	builder.WriteString("-----------------------------")
+
+	reply := tgbotapi.NewMessage(chatID, builder.String())
+	reply.ParseMode = "Markdown"
+	if _, err := bot.Send(reply); err != nil {
+		log.Printf("Error sending Docker status response: %v", err)
+	}
+}
+
+func handleDockerLogsCommand(bot *tgbotapi.BotAPI, chatID int64, args string) {
+	containerName := strings.TrimSpace(args)
+	if containerName == "" {
+		cmd := exec.Command("docker", "ps", "-a", "--format", "{{.Names}}\t{{.State}}")
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			reply := tgbotapi.NewMessage(chatID, "❌ *Gagal mengambil daftar container.*\nPastikan Docker daemon berjalan.\n\nDetail: `"+err.Error()+"`")
+			reply.ParseMode = "Markdown"
+			bot.Send(reply)
+			return
+		}
+
+		lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+		var rows [][]tgbotapi.InlineKeyboardButton
+		for _, line := range lines {
+			if line == "" {
+				continue
+			}
+			parts := strings.Split(line, "\t")
+			if len(parts) < 2 {
+				continue
+			}
+			name := parts[0]
+			state := parts[1]
+
+			var statusEmoji string
+			switch state {
+			case "running":
+				statusEmoji = "🟢"
+			case "paused":
+				statusEmoji = "🟡"
+			case "exited":
+				statusEmoji = "🔴"
+			case "restarting":
+				statusEmoji = "🔄"
+			default:
+				statusEmoji = "⚪"
+			}
+
+			buttonText := fmt.Sprintf("%s %s", statusEmoji, name)
+			buttonData := fmt.Sprintf("dockerlogs:%s", name)
+			btn := tgbotapi.NewInlineKeyboardButtonData(buttonText, buttonData)
+			rows = append(rows, tgbotapi.NewInlineKeyboardRow(btn))
+		}
+
+		if len(rows) == 0 {
+			reply := tgbotapi.NewMessage(chatID, "🐳 *Tidak ada container Docker yang terinstal.*")
+			reply.ParseMode = "Markdown"
+			bot.Send(reply)
+			return
+		}
+
+		keyboard := tgbotapi.NewInlineKeyboardMarkup(rows...)
+		reply := tgbotapi.NewMessage(chatID, "📋 *PILIH CONTAINER DOCKER UNTUK CEK LOG:*")
+		reply.ParseMode = "Markdown"
+		reply.ReplyMarkup = keyboard
+		bot.Send(reply)
+		return
+	}
+
+	cmd := exec.Command("docker", "logs", "--tail", "30", containerName)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		reply := tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ *Gagal mengambil log untuk container `%s`.*\nDetail error: `%s`", containerName, err.Error()))
+		reply.ParseMode = "Markdown"
+		bot.Send(reply)
+		return
+	}
+
+	logContent := strings.TrimSpace(string(output))
+	if logContent == "" {
+		logContent = "(Log kosong / tidak ada output)"
+	}
+
+	if len(logContent) > 3800 {
+		logContent = logContent[len(logContent)-3800:]
+		logContent = "... [truncated]\n" + logContent
+	}
+
+	text := fmt.Sprintf("📄 *LOG DOCKER: %s (30 Baris Terakhir)*\n"+
+		"-----------------------------\n"+
+		"```\n%s\n```\n"+
+		"-----------------------------", containerName, logContent)
+
+	reply := tgbotapi.NewMessage(chatID, text)
+	reply.ParseMode = "Markdown"
+	if _, err := bot.Send(reply); err != nil {
+		log.Printf("Error sending Docker logs response: %v", err)
 	}
 }
 
