@@ -49,12 +49,15 @@ func main() {
 	}
 
 	chatIDStr := os.Getenv("TELEGRAM_CHAT_ID")
-	if chatIDStr == "" {
-		log.Fatal("Fatal: TELEGRAM_CHAT_ID is not set")
-	}
-	chatID, err := strconv.ParseInt(chatIDStr, 10, 64)
-	if err != nil {
-		log.Fatalf("Fatal: Invalid TELEGRAM_CHAT_ID: %v", err)
+	var chatID int64
+	if chatIDStr != "" {
+		var err error
+		chatID, err = strconv.ParseInt(chatIDStr, 10, 64)
+		if err != nil {
+			log.Fatalf("Fatal: Invalid TELEGRAM_CHAT_ID: %v", err)
+		}
+	} else {
+		log.Println("Info: TELEGRAM_CHAT_ID is not set. Proactive alerts and daily reports are disabled.")
 	}
 
 	// Configuration variables
@@ -536,6 +539,10 @@ func startStatsGathering(bot *tgbotapi.BotAPI, chatID int64, pollInterval int, c
 	for range ticker.C {
 		updateStats()
 
+		if chatID == 0 {
+			continue
+		}
+
 		statsMutex.RLock()
 		stats := currentStats
 		statsMutex.RUnlock()
@@ -609,6 +616,10 @@ func sendRecovery(bot *tgbotapi.BotAPI, chatID int64, metric string, val float64
 }
 
 func startDailyReportScheduler(bot *tgbotapi.BotAPI, chatID int64, dailyReportTime string) {
+	if chatID == 0 {
+		log.Println("Info: TELEGRAM_CHAT_ID is not set. Daily report scheduler is disabled.")
+		return
+	}
 	lastSentDate := ""
 
 	// Ticker run checks every 30 seconds
@@ -680,6 +691,9 @@ func sendDailyReport(bot *tgbotapi.BotAPI, chatID int64) {
 }
 
 func sendStartupMessage(bot *tgbotapi.BotAPI, chatID int64) {
+	if chatID == 0 {
+		return
+	}
 	text := "🚀 *Bot Monitoring Server Aktif!*\n\n" +
 		"Bot sekarang memonitor server secara real-time.\n" +
 		"Ketik `/status` untuk melihat metrik terbaru, atau `/help` untuk daftar perintah."
